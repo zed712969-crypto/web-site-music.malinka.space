@@ -14,10 +14,11 @@
   const scrollCue = document.getElementById('scrollCue');
   const bgAudio = document.getElementById('bgAudio');
 
-  const SCENE_DURATION = 4.0; // 2 bars (8 beats) at 120 BPM
+  const SCENE_DURATION = 4.0; // 2 bars (8 beats)
   const GLITCH_CUT_DUR = 0.28;
   const SCENE_COUNT = 16;
-  const BEAT_DUR = 0.5; // 120 BPM
+  const BEAT_DUR = 0.494222; // 121.403 BPM (track.mp3 exact tempo)
+  const BEAT_OFFSET = 0.4324; // 1st downbeat offset in track.mp3
 
   const AMBER_STOPS = [
     [108, 52, 0],
@@ -55,7 +56,10 @@
     sheetH: 0,
     audioPlaying: false,
     manualSceneOffset: 0,
+    prevBass: 0,
     prevMid: 0,
+    beatPhaseDrift: 0,
+    lastSyncTime: 0,
     audioGlitchBoost: 0,
     bassEnergy: 0,
     midEnergy: 0,
@@ -100,6 +104,14 @@
   // Beat-synced steady rotation locked to track tempo (no wobble/rocking)
   function syncedAngle(beatPos, rate = 0.5) {
     return beatPos * rate;
+  }
+
+  // Normalize coordinates by the smaller viewport dimension so 3D shapes match ring scale on both desktop & portrait mobile
+  function getPlaneScale() {
+    const w = Math.max(1, state.cols * state.cellW);
+    const h = Math.max(1, state.rows * state.cellH);
+    const minSide = Math.min(w, h);
+    return { scaleW: w / minSide, scaleH: h / minSide };
   }
 
   function initParticlesAndAttractors() {
@@ -337,13 +349,13 @@
       }
     }
 
-    const aspect = (cols * state.cellW) / (rows * state.cellH);
+    const { scaleW, scaleH } = getPlaneScale();
     const step = energy > 0.55 ? 2 : 3;
     for (let r = 1; r < rows; r += step) {
-      const ny = (r + 0.5) / rows - 0.5;
+      const ny = ((r + 0.5) / rows - 0.5) * scaleH;
       for (let c = 1; c < cols; c += step) {
         if (grid.chars[r * cols + c] !== ' ') continue;
-        const nx = ((c + 0.5) / cols - 0.5) * aspect;
+        const nx = ((c + 0.5) / cols - 0.5) * scaleW;
         const dist = Math.hypot(nx, ny);
         const w = Math.sin(dist * (16 + energy * 10) - motionPos * Math.PI);
         if (w > 0.52) {
@@ -393,7 +405,7 @@
   // 1. 3D Faceted Star Core (beat-synced rotation)
   function sceneFacetedSparkle3D(grid, beatPos, beatPulse) {
     const cols = state.cols, rows = state.rows;
-    const aspect = (cols * state.cellW) / (rows * state.cellH);
+    const { scaleW, scaleH } = getPlaneScale();
     const yaw = syncedAngle(beatPos, Math.PI * 0.25, 0.16);
     const pitch = Math.sin(beatPos * Math.PI * 0.25) * 0.6 + state.scrollFrac * 0.5;
     const roll = syncedAngle(beatPos, 0.18, 0.08);
@@ -419,9 +431,9 @@
 
     const starRadius = 0.38 + beatPulse * 0.045;
     for (let r = 1; r < rows - 1; r++) {
-      const sy0 = ((r + 0.5) / rows - 0.5) * 1.08;
+      const sy0 = ((r + 0.5) / rows - 0.5) * scaleH * 1.08;
       for (let c = 1; c < cols - 1; c++) {
-        const sx0 = (((c + 0.5) / cols - 0.5) * aspect) * 1.08;
+        const sx0 = (((c + 0.5) / cols - 0.5) * scaleW) * 1.08;
         const sx = sx0 * cosR - sy0 * sinR, sy = sx0 * sinR + sy0 * cosR;
         for (let z = -0.18; z <= 0.18; z += 0.025) {
           const tx = sx * cosY + z * sinY, tz = -sx * sinY + z * cosY;
@@ -521,13 +533,13 @@
   // 4. Sacred Mandala
   function sceneMandala(grid, beatPos, beatPulse) {
     const cols = state.cols, rows = state.rows;
-    const aspect = (cols * state.cellW) / (rows * state.cellH);
+    const { scaleW, scaleH } = getPlaneScale();
     const pulseScale = 1 + beatPulse * 0.09;
 
     for (let r = 1; r < rows - 1; r++) {
-      const ny = ((r + 0.5) / rows - 0.5) / pulseScale;
+      const ny = (((r + 0.5) / rows - 0.5) * scaleH) / pulseScale;
       for (let c = 1; c < cols - 1; c++) {
-        const nx = (((c + 0.5) / cols - 0.5) * aspect) / pulseScale;
+        const nx = (((c + 0.5) / cols - 0.5) * scaleW) / pulseScale;
         const dist = Math.hypot(nx, ny), ang = Math.atan2(ny, nx);
         const petals1 = Math.abs(Math.cos(4 * (ang + syncedAngle(beatPos, 0.3, 0.1)))) * 0.32 + 0.14;
         const petals2 = Math.abs(Math.sin(8 * (ang - syncedAngle(beatPos, 0.22, 0.08)))) * 0.24 + 0.18;
@@ -636,7 +648,7 @@
     const cx = cols * 0.5, cy = rows * 0.5;
     const scaleX = Math.min(cols * 0.46, rows * 0.82) * (1 + beatPulse * 0.07);
     const scaleY = scaleX * 0.56;
-    const aspect = (cols * state.cellW) / (rows * state.cellH);
+    const { scaleW, scaleH } = getPlaneScale();
 
     // True 3D rotating core star inside the rings (Z-buffered)
     const sYaw = syncedAngle(beatPos, 0.65);
@@ -646,11 +658,17 @@
     const cosSP = Math.cos(sPitch), sinSP = Math.sin(sPitch);
     const cosSR = Math.cos(sRoll), sinSR = Math.sin(sRoll);
     const coreRad = 0.21 + beatPulse * 0.035;
+    const rPad = 0.30 / scaleH;
+    const cPad = 0.30 / scaleW;
+    const rMin = Math.max(1, Math.floor(rows * (0.5 - rPad)));
+    const rMax = Math.min(rows - 1, Math.ceil(rows * (0.5 + rPad)));
+    const cMin = Math.max(1, Math.floor(cols * (0.5 - cPad)));
+    const cMax = Math.min(cols - 1, Math.ceil(cols * (0.5 + cPad)));
 
-    for (let r = Math.floor(rows * 0.22); r < Math.floor(rows * 0.78); r++) {
-      const sy0 = (r + 0.5) / rows - 0.5;
-      for (let c = Math.floor(cols * 0.24); c < Math.floor(cols * 0.76); c++) {
-        const sx0 = ((c + 0.5) / cols - 0.5) * aspect;
+    for (let r = rMin; r < rMax; r++) {
+      const sy0 = ((r + 0.5) / rows - 0.5) * scaleH;
+      for (let c = cMin; c < cMax; c++) {
+        const sx0 = ((c + 0.5) / cols - 0.5) * scaleW;
         const sx = sx0 * cosSR - sy0 * sinSR;
         const sy = sx0 * sinSR + sy0 * cosSR;
         for (let z = -0.14; z <= 0.14; z += 0.024) {
@@ -690,7 +708,7 @@
   // 9. Spiral Galaxy Vortex
   function sceneGalaxyVortex(grid, beatPos, beatPulse) {
     const cols = state.cols, rows = state.rows;
-    const aspect = (cols * state.cellW) / (rows * state.cellH);
+    const { scaleW, scaleH } = getPlaneScale();
     const tilt = 0.56 + Math.sin(beatPos * Math.PI * 0.25) * 0.25;
     const rotW = syncedAngle(beatPos, 0.25, 0.12);
     const cosW = Math.cos(rotW), sinW = Math.sin(rotW);
@@ -701,7 +719,7 @@
       const d = p.dist * (1 + beatPulse * 0.06);
       const gx0 = Math.cos(ang) * d, gy0 = Math.sin(ang) * d * tilt;
       const gx = gx0 * cosW - gy0 * sinW, gy = gx0 * sinW + gy0 * cosW;
-      const c = Math.round((gx / aspect + 0.5) * cols), r = Math.round((gy + 0.5) * rows);
+      const c = Math.round((gx / scaleW + 0.5) * cols), r = Math.round((gy / scaleH + 0.5) * rows);
       const ch = d < 0.09 ? '✦' : (p.size > 0.45 ? p.ch : '·');
       setCell(grid, c, r, ch, d * 2 + beatPos * 0.12, Math.max(0.3, 1 - d * 1.4), d < 0.12 ? 0.9 : p.size * 0.4);
     }
@@ -710,13 +728,13 @@
   // 10. Hyperspace Star Tunnel
   function sceneStarTunnel(grid, beatPos, beatPulse) {
     const cols = state.cols, rows = state.rows;
-    const aspect = (cols * state.cellW) / (rows * state.cellH);
+    const { scaleW, scaleH } = getPlaneScale();
     const twistBase = syncedAngle(beatPos, 0.35, 0.16);
 
     for (let r = 1; r < rows - 1; r++) {
-      const ny = (r + 0.5) / rows - 0.5;
+      const ny = ((r + 0.5) / rows - 0.5) * scaleH;
       for (let c = 1; c < cols - 1; c++) {
-        const nx = ((c + 0.5) / cols - 0.5) * aspect;
+        const nx = ((c + 0.5) / cols - 0.5) * scaleW;
         const ang = Math.atan2(ny, nx);
         const rx = nx * Math.cos(twistBase) - ny * Math.sin(twistBase);
         const ry = nx * Math.sin(twistBase) + ny * Math.cos(twistBase);
@@ -756,12 +774,12 @@
   // 12. 8x Kaleidoscope
   function sceneKaleidoscope(grid, beatPos, beatPulse) {
     const cols = state.cols, rows = state.rows;
-    const aspect = (cols * state.cellW) / (rows * state.cellH);
+    const { scaleW, scaleH } = getPlaneScale();
 
     for (let r = 1; r < rows - 1; r++) {
-      const ny = (r + 0.5) / rows - 0.5;
+      const ny = ((r + 0.5) / rows - 0.5) * scaleH;
       for (let c = 1; c < cols - 1; c++) {
-        const nx = ((c + 0.5) / cols - 0.5) * aspect;
+        const nx = ((c + 0.5) / cols - 0.5) * scaleW;
         const dist = Math.hypot(nx, ny);
         let ang = Math.atan2(ny, nx) + syncedAngle(beatPos, 0.2, 0.12);
         const sector = Math.PI / 4;
@@ -1261,7 +1279,33 @@
     }
 
     const syncTime = state.audioPlaying ? Math.max(0, bgAudio.currentTime) : state.elapsed;
-    const beatCount = syncTime / BEAT_DUR; // 2 beats/sec at 120 BPM
+    const bassDelta = bassEnergy - state.prevBass;
+    state.prevBass = state.prevBass * 0.72 + bassEnergy * 0.28;
+
+    if (state.audioPlaying) {
+      if (syncTime < state.lastSyncTime - 0.5) {
+        state.beatPhaseDrift = 0;
+        state.lastBarIndex = -1;
+        state.lastQuarterBeat = -1;
+      }
+      state.lastSyncTime = syncTime;
+
+      if (bassDelta > 0.055 && bassEnergy > 0.22) {
+        const estBeat = Math.max(0, syncTime - BEAT_OFFSET + state.beatPhaseDrift) / BEAT_DUR;
+        const phaseErr = estBeat - Math.round(estBeat);
+        if (Math.abs(phaseErr) < 0.35) {
+          state.beatPhaseDrift = Math.max(
+            -0.09,
+            Math.min(0.09, state.beatPhaseDrift - phaseErr * BEAT_DUR * 0.14)
+          );
+        }
+      }
+    }
+
+    const beatBase = state.audioPlaying
+      ? Math.max(0, syncTime - BEAT_OFFSET + state.beatPhaseDrift)
+      : syncTime;
+    const beatCount = beatBase / BEAT_DUR;
     const beatPhase = beatCount % 1;
     const barIndex = Math.floor(beatCount / 4); // exact 4/4 bar index
     const quarterBeat = Math.floor(beatCount);
@@ -1282,6 +1326,10 @@
       const barChanged = barIndex !== state.lastBarIndex;
       const beatChanged = quarterBeat !== state.lastQuarterBeat;
 
+      if (barChanged) {
+        state.lastBarIndex = barIndex;
+      }
+
       if (isHype && !state.wasHype && beatChanged) {
         state.wasHype = true;
         state.activeSceneIdx = pickFromPool(HYPE_SCENES, state.activeSceneIdx);
@@ -1289,7 +1337,6 @@
         state.audioGlitchBoost = Math.max(state.audioGlitchBoost, 0.85);
         state.strobeFlash = Math.max(state.strobeFlash, 0.55);
       } else if (barChanged) {
-        state.lastBarIndex = barIndex;
         const barsPerScene = isHype ? 2 : 4; // 2 bars (8 beats) or 4 bars (16 beats) in 4/4
         if (barIndex % barsPerScene === 0) {
           state.wasHype = isHype;
